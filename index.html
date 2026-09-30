@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a cred card — Marathon</title>
+<meta name="description" content="Check that a Marathon cred card is genuine and unaltered.">
+<meta name="referrer" content="no-referrer">
+<style>
+  :root {
+    --bg: #07080b; --card: #0e1117; --line: rgba(255,255,255,.10); --text: #f4f6fb;
+    --muted: #aab2c5; --dim: #8a93a8; --ok: #4ade80; --bad: #f87171; --accent: #5b8def;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+  .brand { font-weight: 700; letter-spacing: .3em; color: var(--accent); font-size: 13px; }
+  h1 { font-size: 28px; margin: 6px 0 4px; letter-spacing: -.01em; }
+  p { color: var(--muted); margin: 0; }
+  .status { display: flex; gap: 14px; align-items: flex-start; margin-top: 28px; padding: 18px 20px;
+    border-radius: 16px; border: 1px solid var(--line); background: var(--card); }
+  .status .icon { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 800; color: #07080b; }
+  .status.ok { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+  .status.ok .icon { background: var(--ok); }
+  .status.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  .status.bad .icon { background: var(--bad); }
+  .status strong { display: block; font-size: 18px; color: var(--text); }
+  .card { margin-top: 20px; border-radius: 24px; border: 1px solid var(--line); padding: 32px;
+    background: radial-gradient(circle at 90% -10%, color-mix(in srgb, var(--accent) 35%, transparent), transparent 55%), var(--card); }
+  .name { font-size: 40px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; overflow-wrap: anywhere; }
+  .course { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .bar { height: 10px; border-radius: 99px; background: rgba(255,255,255,.08); margin: 22px 0 12px; overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 99px; background: var(--accent); }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 22px; color: #c9cfdc; font-size: 15px; }
+  .facts b { color: var(--text); }
+  .meta { margin-top: 22px; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 14px; }
+  .meta dt { color: var(--dim); } .meta dd { margin: 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+  .pct { float: right; font-size: 44px; font-weight: 800; color: var(--accent); line-height: 1; margin-left: 12px; }
+  form { margin-top: 40px; display: flex; gap: 10px; flex-wrap: wrap; }
+  input { flex: 1 1 320px; min-width: 0; background: var(--card); color: var(--text); border: 2px solid var(--line);
+    border-radius: 12px; padding: 12px 14px; font: 16px ui-monospace, Menlo, monospace; }
+  input:focus { outline: none; border-color: var(--accent); }
+  button { background: var(--accent); color: #07080b; border: 0; border-radius: 12px; padding: 12px 18px; font-weight: 700; font-size: 15px; cursor: pointer; }
+  .fine { margin-top: 28px; font-size: 13px; color: var(--dim); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">MARATHON</div>
+  <h1>Verify a cred card</h1>
+  <p>A cred card is a signed snapshot of someone's progress through a Marathon course. This page checks the signature right here in your browser — nothing is sent anywhere.</p>
+
+  <div id="status" class="status" hidden>
+    <div class="icon" id="status-icon"></div>
+    <div><strong id="status-title"></strong><p id="status-text"></p></div>
+  </div>
+
+  <section id="card" class="card" hidden>
+    <div class="pct" id="c-pct"></div>
+    <div class="name" id="c-name"></div>
+    <p id="c-verb"></p>
+    <div class="course" id="c-course"></div>
+    <div class="bar"><div id="c-bar"></div></div>
+    <div class="facts" id="c-facts"></div>
+    <dl class="meta">
+      <dt>Card ID</dt><dd id="c-id"></dd>
+      <dt>Issued</dt><dd id="c-date"></dd>
+      <div id="c-user-row" style="display:contents"><dt>Account</dt><dd id="c-user"></dd></div>
+      <dt>Signed with</dt><dd id="c-key"></dd>
+    </dl>
+  </section>
+
+  <form id="lookup">
+    <input id="token" name="token" placeholder="Paste a cred card verify link" autocomplete="off" spellcheck="false" aria-label="Cred card verify link">
+    <button type="submit">Check</button>
+  </form>
+
+  <p class="fine">A genuine card was issued by Marathon and hasn't been altered since: the name, course, progress and date shown here are exactly what was signed. It shows progress on its issue date, not today.</p>
+</main>
+
+<script type="module">
+  import { verifyAsync } from "./ed25519.js";
+
+  const $ = (id) => document.getElementById(id);
+  const KEYS = await fetch("./keys.json").then((r) => r.json());
+
+  function b64u(s) {
+    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "="));
+    return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  }
+
+  function status(ok, title, text) {
+    $("status").hidden = false;
+    $("status").className = `status ${ok ? "ok" : "bad"}`;
+    $("status-icon").textContent = ok ? "✓" : "✕";
+    $("status-title").textContent = title;
+    $("status-text").textContent = text;
+  }
+
+  function partsLine(c) {
+    if (!c.pd.length) return `Part 1 of ${c.pt} under way`;
+    if (c.pd.length === c.pt) return `All ${c.pt} parts complete`;
+    return `${c.pd.length} of ${c.pt} parts complete`;
+  }
+
+  function show(c) {
+    const pct = c.st ? Math.floor((c.sd / c.st) * 100) : 0;
+    $("card").hidden = false;
+    $("c-pct").textContent = `${pct}%`;
+    $("c-name").textContent = c.n;
+    $("c-verb").textContent = pct === 100 ? "has completed" : "is working through";
+    $("c-course").textContent = c.t;
+    $("c-bar").style.width = `${Math.max(pct, 1.5)}%`;
+    $("c-facts").replaceChildren(
+      ...[[c.sd, ` of ${c.st} sections`], [c.ud, " mini-sections"], [null, partsLine(c)]].map(([n, t]) => {
+        const span = document.createElement("span");
+        if (n !== null) { const b = document.createElement("b"); b.textContent = n; span.append(b); }
+        span.append(t);
+        return span;
+      }),
+    );
+    $("c-id").textContent = `CRED-${c.id.slice(0, 5)}-${c.id.slice(5)}`;
+    // v2 cards carry the exact moment; show it in the viewer's own time zone.
+    $("c-date").textContent = c.ts
+      ? new Date(c.ts).toLocaleString(undefined, { dateStyle: "long", timeStyle: "short" })
+      : new Date(`${c.d}T12:00:00Z`).toLocaleDateString(undefined, { dateStyle: "long" });
+    $("c-user-row").hidden = !c.u;
+    $("c-user").textContent = c.u ?? "";
+    $("c-key").textContent = c.k;
+  }
+
+  async function check(raw) {
+    $("card").hidden = true;
+    const token = raw.includes("#") ? raw.slice(raw.indexOf("#") + 1) : raw.trim();
+    if (!token) { $("status").hidden = true; return; }
+    const [body, sig] = token.split(".");
+    let claims;
+    try {
+      claims = JSON.parse(new TextDecoder().decode(b64u(body)));
+    } catch {
+      return status(false, "That isn't a cred card", "The link is incomplete or damaged — copy the whole thing, including everything after the #.");
+    }
+    const key = KEYS[claims.k];
+    if (!key) {
+      return status(false, "Not issued by Marathon", "This card claims a signing key Marathon has never used.");
+    }
+    let valid = false;
+    try {
+      valid = await verifyAsync(b64u(sig || ""), b64u(body), b64u(key));
+    } catch { valid = false; }
+    if (!valid) {
+      return status(false, "Not genuine", "The signature doesn't match — this card has been altered or forged. Don't trust the details it shows.");
+    }
+    status(true, "Genuine cred card", `Issued by Marathon to ${claims.n} and unaltered since.`);
+    show(claims);
+  }
+
+  $("lookup").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = $("token").value;
+    const token = v.includes("#") ? v.slice(v.indexOf("#") + 1) : v.trim();
+    history.replaceState(null, "", `#${token}`);
+    check(token);
+  });
+  window.addEventListener("hashchange", () => check(location.hash.slice(1)));
+  check(location.hash.slice(1));
+</script>
+</body>
+</html>
