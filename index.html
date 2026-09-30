@@ -88,6 +88,26 @@
   const $ = (id) => document.getElementById(id);
   const KEYS = await fetch("./keys.json").then((r) => r.json());
 
+  /** Cards their holders deleted, as hashes of their ids. Fetched fresh
+   * every time (the query defeats the CDN's copy), and a failure is said
+   * out loud rather than read as "not deleted". */
+  async function deletedMarks() {
+    try {
+      const r = await fetch(`./deleted.json?t=${Date.now()}`, { cache: "no-store" });
+      if (r.status === 404) return new Set();
+      const data = await r.json();
+      return new Set(data.deleted ?? []);
+    } catch {
+      return null;
+    }
+  }
+
+  async function mark(id) {
+    const bytes = new TextEncoder().encode(`marathon-cred:${id}`);
+    const hash = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
   function b64u(s) {
     const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "="));
     return Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -144,6 +164,12 @@
     } catch {
       return status(false, "That isn't a cred card", "The link is incomplete or damaged — copy the whole thing, including everything after the #.");
     }
+    // A deleted card says nothing: checked before the signature, so not
+    // even its name reaches the page.
+    const deleted = await deletedMarks();
+    if (deleted && typeof claims.id === "string" && deleted.has(await mark(claims.id))) {
+      return status(false, "This cred card was deleted", "Its holder deleted it, so its details are no longer shown or vouched for.");
+    }
     const key = KEYS[claims.k];
     if (!key) {
       return status(false, "Not issued by Marathon", "This card claims a signing key Marathon has never used.");
@@ -155,7 +181,13 @@
     if (!valid) {
       return status(false, "Not genuine", "The signature doesn't match — this card has been altered or forged. Don't trust the details it shows.");
     }
-    status(true, "Genuine cred card", `Issued by Marathon to ${claims.n} and unaltered since.`);
+    status(
+      true,
+      "Genuine cred card",
+      deleted
+        ? `Issued by Marathon to ${claims.n} and unaltered since.`
+        : `Issued by Marathon to ${claims.n} and unaltered since. (Couldn't check whether it has since been deleted — try again in a moment.)`,
+    );
     show(claims);
   }
 
